@@ -746,6 +746,25 @@ export class ObsidianGitSettingsTab extends PluginSettingTab {
                 desc: "Repository paths, Git environment, and device options.",
                 items: [
                     {
+                        name: "Ignored folders",
+                        desc: "One vault-relative folder per line. Hide changes and skip these folders when staging or committing with the plugin. Conflicts remain visible. Standard Git is unaffected.",
+                        render: (setting) => {
+                            setting.addTextArea((text) =>
+                                text
+                                    .setPlaceholder(".obsidian")
+                                    .setValue(this.settings.ignoredFolders)
+                                    .onChange(async (value) => {
+                                        await this.setControlValue(
+                                            "ignoredFolders",
+                                            value
+                                        );
+                                        if (this.plugin.gitReady)
+                                            await this.plugin.refresh();
+                                    })
+                            );
+                        },
+                    },
+                    {
                         ...this.toggle(
                             "Update submodules",
                             "updateSubmodules",

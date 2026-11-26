@@ -433,16 +433,23 @@ export class SimpleGit extends GitManager {
                 vaultPath: this.getRelativeVaultPath(res.path),
             };
         });
+        const visibleFiles = this.ignoredDirectories.length
+            ? allFilesFormatted.filter(
+                  (f) =>
+                      this.allowsPath(f.path) &&
+                      (!f.from || this.allowsPath(f.from))
+              )
+            : allFilesFormatted;
         const conflicted = status.conflicted.map(
             (path) => this.formatPath({ path }).path
         );
         const conflictedPaths = new Set(conflicted);
         return {
-            all: allFilesFormatted,
-            changed: allFilesFormatted.filter(
+            all: visibleFiles,
+            changed: visibleFiles.filter(
                 (e) => e.workingDir !== " " && !conflictedPaths.has(e.path)
             ),
-            staged: allFilesFormatted.filter(
+            staged: visibleFiles.filter(
                 (e) => e.index !== " " && e.index != "U"
             ),
             conflicted,
@@ -486,6 +493,9 @@ export class SimpleGit extends GitManager {
                 .filter(
                     (file) =>
                         file.workingDir !== " " &&
+                        (!this.ignoredDirectories.length ||
+                            (this.allowsPath(file.path) &&
+                                (!file.from || this.allowsPath(file.from)))) &&
                         !conflictedPaths.has(file.path)
                 );
         };
@@ -701,6 +711,25 @@ export class SimpleGit extends GitManager {
         return this.git.raw(args).then((x) => x.trim() !== "");
     }
 
+    private ignoredPathspecs() {
+        return this.ignoredDirectories
+            .map((dir) => this.getRelativeRepoPath(dir).replace(/\\/g, "/"))
+            .filter((dir) => dir && dir !== ".." && !dir.startsWith("../"))
+            .map((dir) => `:(top,exclude,literal)${dir}`);
+    }
+
+    private async checkIgnoredIndex() {
+        if (!this.ignoredDirectories.length) return;
+        const paths = await this.git.raw([
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-only",
+            "-z",
+        ]);
+        this.assertNoIgnoredStaged(paths.split("\0").filter(Boolean));
+    }
+
     async commitAll({
         message,
         status,
@@ -715,9 +744,32 @@ export class SimpleGit extends GitManager {
         amend?: boolean;
     }): Promise<number> {
         return this.withGitOperation(GitOperation.commit, async () => {
+            await this.checkIgnoredIndex();
+            if (this.ignoredDirectories.length && !this.allowsPath("."))
+                return 0;
             if (this.plugin.settings.updateSubmodules) {
                 const submodulePaths = await this.getSubmodulePaths();
+                const eligible: string[] = [];
                 for (const item of submodulePaths) {
+                    if (this.ignoredDirectories.length) {
+                        const rel = path.relative(this.absoluteRepoPath, item);
+                        if (!this.allowsPath(rel)) continue;
+                        const vaultPath = this.getRelativeVaultPath(
+                            rel
+                        ).replace(/\\/g, "/");
+                        if (
+                            this.ignoredDirectories.some((dir) =>
+                                dir.startsWith(vaultPath + "/")
+                            )
+                        ) {
+                            throw new Error(
+                                "An ignored folder is inside a submodule. Commit that submodule with standard Git, or disable Update submodules."
+                            );
+                        }
+                    }
+                    eligible.push(item);
+                }
+                for (const item of eligible) {
                     await this.git.cwd({ path: item, root: false }).add("-A");
                     await this.git
                         .cwd({ path: item, root: false })
@@ -738,6 +790,7 @@ export class SimpleGit extends GitManager {
                         "-A",
                         "--",
                         ...selection.globs.map((glob) => `:(glob)${glob}`),
+                        ...this.ignoredPathspecs(),
                     ]);
                 }
             } else if (selection?.globs.length) {
@@ -746,14 +799,13 @@ export class SimpleGit extends GitManager {
                     "--",
                     ".",
                     ...selection.globs.map((glob) => `:(exclude,glob)${glob}`),
+                    ...this.ignoredPathspecs(),
                 ]);
             } else {
-                const vaultPath = this.getVaultPathspec();
-                await this.git.add(
-                    vaultPath == undefined ? "-A" : ["-A", "--", vaultPath]
-                );
+                await this.stageAll({});
             }
 
+            await this.checkIgnoredIndex();
             const res = await this.git.commit(
                 await this.formatCommitMessage(message),
                 amend ? ["--amend"] : []
@@ -773,6 +825,7 @@ export class SimpleGit extends GitManager {
     }): Promise<number> {
         return this.withGitOperation(GitOperation.commit, async () => {
             try {
+                await this.checkIgnoredIndex();
                 const res = await this.git.commit(
                     await this.formatCommitMessage(message),
                     amend ? ["--amend"] : []
@@ -797,11 +850,22 @@ export class SimpleGit extends GitManager {
 
     async stage(path: string, relativeToVault: boolean): Promise<void> {
         path = this.getRelativeRepoPath(path, relativeToVault);
-        await this.git.add(["--", path]);
+        if (this.ignoredDirectories.length && !this.allowsPath(path)) return;
+        await this.git.add(["--", path, ...this.ignoredPathspecs()]);
     }
 
     async stageAll({ dir }: { dir?: string }): Promise<void> {
         const scopedDir = dir ?? this.getVaultPathspec();
+        if (this.ignoredDirectories.length) {
+            if (!this.allowsPath(scopedDir ?? ".")) return;
+            await this.git.add([
+                "-A",
+                "--",
+                scopedDir ?? ".",
+                ...this.ignoredPathspecs(),
+            ]);
+            return;
+        }
         await this.git.add(
             scopedDir == undefined ? "-A" : ["-A", "--", scopedDir]
         );
@@ -809,12 +873,22 @@ export class SimpleGit extends GitManager {
 
     async unstageAll({ dir }: { dir?: string }): Promise<void> {
         const scopedDir = dir ?? this.getVaultPathspec();
+        if (this.ignoredDirectories.length) {
+            if (!this.allowsPath(scopedDir ?? ".")) return;
+            await this.git.reset([
+                "--",
+                scopedDir ?? ".",
+                ...this.ignoredPathspecs(),
+            ]);
+            return;
+        }
         await this.git.reset(scopedDir != undefined ? ["--", scopedDir] : []);
     }
 
     async unstage(path: string, relativeToVault: boolean): Promise<void> {
         path = this.getRelativeRepoPath(path, relativeToVault);
-        await this.git.reset(["--", path]);
+        if (this.ignoredDirectories.length && !this.allowsPath(path)) return;
+        await this.git.reset(["--", path, ...this.ignoredPathspecs()]);
     }
 
     async discard(filepath: string): Promise<void> {
@@ -839,6 +913,22 @@ export class SimpleGit extends GitManager {
 
     async getUntrackedPaths(opts: { path?: string }): Promise<string[]> {
         const dir = opts?.path ?? this.getVaultPathspec();
+        if (this.ignoredDirectories.length) {
+            if (!this.allowsPath(dir ?? ".")) return [];
+            return (
+                await this.git.raw([
+                    "ls-files",
+                    "--others",
+                    "--exclude-standard",
+                    "-z",
+                    "--",
+                    dir ?? ".",
+                    ...this.ignoredPathspecs(),
+                ])
+            )
+                .split("\0")
+                .filter(Boolean);
+        }
         const args = [];
         if (dir != undefined) {
             args.push("--", dir);
@@ -868,6 +958,14 @@ export class SimpleGit extends GitManager {
     }
 
     async discardAll({ dir }: { dir?: string }): Promise<void> {
+        if (this.ignoredDirectories.length) {
+            const files = (await this.status({ path: dir })).changed.filter(
+                (f) => f.workingDir !== "U"
+            );
+            for (const f of files)
+                await this.git.checkout(["--", `:(literal)${f.path}`]);
+            return;
+        }
         return this.discard(dir ?? this.getVaultPathspec() ?? ".");
     }
 

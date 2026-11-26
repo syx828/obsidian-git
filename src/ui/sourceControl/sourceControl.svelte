@@ -19,6 +19,7 @@
     import type GitView from "./sourceControl";
     import TooManyFilesComponent from "./components/tooManyFilesComponent.svelte";
     import { onMount } from "svelte";
+    import { visibleInSourceControl } from "src/ignoredFolders";
 
     interface Props {
         plugin: ObsidianGit;
@@ -33,6 +34,8 @@
     let rebaseInProgress = $state(false);
     let status: Status | undefined = $state();
     let lastPulledFiles: FileStatusResult[] = $state([]);
+    let visibleChanged: FileStatusResult[] = $state([]);
+    let visibleStaged: FileStatusResult[] = $state([]);
     let commitMessage = $derived(plugin.settings.commitMessage);
     let buttons: (HTMLElement | null)[] = $state([]);
     let changeHierarchy: StatusRootTreeItem | undefined = $state();
@@ -287,11 +290,9 @@
         mergeInProgress = plugin.state.mergeInProgress;
         rebaseInProgress = plugin.state.rebaseInProgress;
         loading = false;
-        if (
-            plugin.lastPulledFiles &&
-            plugin.lastPulledFiles != lastPulledFiles
-        ) {
-            lastPulledFiles = plugin.lastPulledFiles;
+        const visible = visibleInSourceControl(plugin.settings.ignoredFolders);
+        if (plugin.lastPulledFiles) {
+            lastPulledFiles = plugin.lastPulledFiles.filter(visible);
 
             lastPulledFilesHierarchy = {
                 title: "",
@@ -310,14 +311,14 @@
                     .last()!
                     .localeCompare(getDisplayPath(b.vaultPath));
             };
-            status.changed.sort(sort);
-            status.staged.sort(sort);
+            visibleChanged = status.changed.filter(visible).sort(sort);
+            visibleStaged = status.staged.filter(visible).sort(sort);
             changeHierarchy = {
                 title: "",
                 path: "",
                 vaultPath: "",
                 children: plugin.gitManager.getTreeStructure(
-                    status.changed,
+                    visibleChanged,
                     plugin.settings.limitToVault ? "vault" : "repository"
                 ),
             };
@@ -326,7 +327,7 @@
                 path: "",
                 vaultPath: "",
                 children: plugin.gitManager.getTreeStructure(
-                    status.staged,
+                    visibleStaged,
                     plugin.settings.limitToVault ? "vault" : "repository"
                 ),
             };
@@ -703,7 +704,7 @@
                                 </div>
                             </div>
                             <div class="files-count">
-                                {status.staged.length}
+                                {visibleStaged.length}
                             </div>
                         </div>
                     </div>
@@ -722,13 +723,13 @@
                                     bind:closed={stagedClosed}
                                 />
                             {:else}
-                                {#each arrayProxyWithNewLength(status.staged, 500) as stagedFile}
+                                {#each arrayProxyWithNewLength(visibleStaged, 500) as stagedFile}
                                     <StagedFileComponent
                                         change={stagedFile}
                                         {view}
                                     />
                                 {/each}
-                                <TooManyFilesComponent files={status.staged} />
+                                <TooManyFilesComponent files={visibleStaged} />
                             {/if}
                         </div>
                     {/if}
@@ -855,7 +856,7 @@
                                 </div>
                             </div>
                             <div class="files-count">
-                                {status.changed.length}
+                                {visibleChanged.length}
                             </div>
                         </div>
                     </div>
@@ -874,10 +875,10 @@
                                     bind:closed={unstagedClosed}
                                 />
                             {:else}
-                                {#each arrayProxyWithNewLength(status.changed, 500) as change}
+                                {#each arrayProxyWithNewLength(visibleChanged, 500) as change}
                                     <FileComponent {change} {view} />
                                 {/each}
-                                <TooManyFilesComponent files={status.changed} />
+                                <TooManyFilesComponent files={visibleChanged} />
                             {/if}
                         </div>
                     {/if}

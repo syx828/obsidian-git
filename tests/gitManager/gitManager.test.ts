@@ -53,6 +53,59 @@ describe.each(gitManagerBackends)("$name GitManager contract", (backend) => {
         expect(trigger).toHaveBeenCalledWith("obsidian-git:refs-changed");
     });
 
+    it("keeps plugin-ignored changes for standard Git", async () => {
+        context = await backend.create();
+        const { manager, plugin, repo } = context;
+        const ignored = ".obsidian/app.json";
+        await repo.writeAndCommit(ignored, "old", "shared default");
+        plugin.settings.ignoredFolders =
+            manager.getRelativeVaultPath(".obsidian");
+        repo.write(ignored, "local");
+        repo.write("note.md", "edited");
+        expect(
+            (await manager.status()).changed.map((f) => f.path)
+        ).not.toContain(ignored);
+        for (const mode of ["include", "exclude"] as const) {
+            const { files } = await manager.selectAutoCommitFiles(
+                await manager.status(),
+                {
+                    mode,
+                    globs: mode === "include" ? ["**/*"] : ["unused/**"],
+                }
+            );
+            expect(files.map((f) => f.path)).toEqual(["note.md"]);
+        }
+        await manager.stageAll({});
+        expect(await repo.cachedDiffNames()).toBe("note.md");
+        await manager.commitAll({ message: "notes only" });
+        expect(await repo.show(`HEAD:${ignored}`)).toBe("old");
+        await repo.git.add(ignored);
+        await expect(
+            manager.commit({ message: "must not commit" })
+        ).rejects.toThrow(/ignored folder/i);
+        expect(await repo.cachedDiffNames()).toBe(ignored);
+        repo.write("note.md", "partly staged");
+        await repo.git.add("note.md");
+        repo.write("note.md", "more edits");
+        const indexBefore = await repo.raw(["diff", "--cached"]);
+        await expect(
+            manager.commitAll({ message: "still must not commit" })
+        ).rejects.toThrow(/ignored folder/i);
+        expect(await repo.raw(["diff", "--cached"])).toBe(indexBefore);
+    });
+
+    it("honors plugin-ignored folders containing the whole repository", async () => {
+        context = await backend.create();
+        const { manager, plugin, repo } = context;
+        plugin.settings.ignoredFolders = manager.getRelativeVaultPath(".");
+        repo.write("note.md", "cli only");
+        await manager.stageAll({});
+        expect(await repo.cachedDiffNames()).toBe("");
+        await repo.git.add("note.md");
+        await manager.unstageAll({});
+        expect(await repo.cachedDiffNames()).toBe("note.md");
+    });
+
     it("does not notify ref listeners when checkout fails", async () => {
         context = await backend.create();
         const { manager, plugin } = context;

@@ -69,6 +69,7 @@ export class HunkActions {
             return;
         }
         const filepath = editor.state.field(editorInfoField).file!.path;
+        if (!this.plugin.gitManager.canStageVaultFile(filepath)) return;
 
         const patch =
             Hunks.createPatch(filepath, [hunk], "100644", invert).join("\n") +

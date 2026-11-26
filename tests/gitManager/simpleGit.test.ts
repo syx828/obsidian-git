@@ -56,6 +56,42 @@ function addStatusBar(plugin: FakePlugin) {
     return statusBar;
 }
 
+it("checks every submodule for ignored folders before staging the first", async () => {
+    const { manager, plugin, repo } = withCleanup(
+        await createSimpleGitTestContext()
+    );
+    for (const name of ["books", "pictures"]) {
+        await simpleGit({
+            baseDir: repo.repoPath,
+            unsafe: { allowUnsafeProtocolOverride: true },
+        }).raw([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            repo.remotePath,
+            name,
+        ]);
+    }
+    await repo.git.commit("add submodules");
+    vi.spyOn(manager, "getSubmodulePaths").mockResolvedValue(
+        ["books", "pictures"].map((name) => path.join(repo.repoPath, name))
+    );
+    plugin.settings.updateSubmodules = true;
+    plugin.settings.ignoredFolders =
+        manager.getRelativeVaultPath("pictures/private");
+    repo.write("books/note.md", "staged");
+    await repo.raw(["-C", "books", "add", "note.md"]);
+    repo.write("books/note.md", "unstaged");
+    const head = () => repo.raw(["-C", "books", "rev-parse", "HEAD"]);
+    const index = () => repo.raw(["-C", "books", "diff", "--cached"]);
+    const before = await Promise.all([head(), index()]);
+    await expect(
+        manager.commitAll({ message: "must not change books" })
+    ).rejects.toThrow(/inside a submodule/);
+    expect(await Promise.all([head(), index()])).toEqual(before);
+}, 30000);
+
 async function addVaultDirectory(
     repo: Awaited<ReturnType<typeof createRepoWithOrigin>>
 ) {

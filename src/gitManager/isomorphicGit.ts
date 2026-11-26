@@ -214,6 +214,11 @@ export class IsomorphicGit extends GitManager {
             const conflictedPaths = new Set(conflicted);
             for (const file of status) {
                 if (
+                    this.ignoredDirectories.length &&
+                    !this.allowsPath(file.path)
+                )
+                    continue;
+                if (
                     file.workingDir !== " " &&
                     !conflictedPaths.has(file.path)
                 ) {
@@ -261,6 +266,7 @@ export class IsomorphicGit extends GitManager {
         amend?: boolean;
     }): Promise<number> {
         await this.checkAuthorInfo();
+        await this.checkIgnoredIndex();
         await this.stageAll({ status, unstagedFiles, selection });
         return this.commit({ message, amend });
     }
@@ -276,6 +282,13 @@ export class IsomorphicGit extends GitManager {
         });
     }
 
+    private async checkIgnoredIndex() {
+        if (this.ignoredDirectories.length)
+            this.assertNoIgnoredStaged(
+                (await this.getStagedFiles(".")).map((file) => file.path)
+            );
+    }
+
     async commit({
         message,
         amend,
@@ -286,6 +299,7 @@ export class IsomorphicGit extends GitManager {
         return this.withGitOperation(GitOperation.commit, async () => {
             try {
                 await this.checkAuthorInfo();
+                await this.checkIgnoredIndex();
                 const formatMessage = await this.formatCommitMessage(message);
                 const mergeHeads = await this.getMergeHeads();
                 let parent: string[] | undefined = undefined;
@@ -318,6 +332,7 @@ export class IsomorphicGit extends GitManager {
 
     async stage(filepath: string, relativeToVault: boolean): Promise<void> {
         const gitPath = this.getRelativeRepoPath(filepath, relativeToVault);
+        if (this.ignoredDirectories.length && !this.allowsPath(gitPath)) return;
         let vaultPath: string;
         if (relativeToVault) {
             vaultPath = filepath;
@@ -358,7 +373,14 @@ export class IsomorphicGit extends GitManager {
         const isSelected = selection
             ? createAutoCommitPathSelector(selection)
             : () => true;
-        await this.stageFiles(files.filter((file) => isSelected(file.path)));
+        await this.stageFiles(
+            files.filter(
+                (file) =>
+                    isSelected(file.path) &&
+                    (!this.ignoredDirectories.length ||
+                        this.allowsPath(file.path))
+            )
+        );
     }
 
     private async stageFiles(
@@ -386,6 +408,8 @@ export class IsomorphicGit extends GitManager {
 
     async unstage(filepath: string, relativeToVault: boolean): Promise<void> {
         filepath = this.getRelativeRepoPath(filepath, relativeToVault);
+        if (this.ignoredDirectories.length && !this.allowsPath(filepath))
+            return;
         await this.wrapFS(
             git.resetIndex({ ...this.getRepo(), filepath: filepath })
         );
@@ -407,9 +431,15 @@ export class IsomorphicGit extends GitManager {
         }
         await this.wrapFS(
             Promise.all(
-                staged.map((file) =>
-                    git.resetIndex({ ...this.getRepo(), filepath: file })
-                )
+                staged
+                    .filter(
+                        (file) =>
+                            !this.ignoredDirectories.length ||
+                            this.allowsPath(file)
+                    )
+                    .map((file) =>
+                        git.resetIndex({ ...this.getRepo(), filepath: file })
+                    )
             )
         );
     }
@@ -451,6 +481,9 @@ export class IsomorphicGit extends GitManager {
                 .map(({ path }) => path);
         }
 
+        if (this.ignoredDirectories.length)
+            files = files.filter((file) => this.allowsPath(file));
+        if (!files.length) return;
         await this.wrapFS(
             git.checkout({
                 ...this.getRepo(),

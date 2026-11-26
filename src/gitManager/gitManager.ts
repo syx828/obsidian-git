@@ -6,6 +6,7 @@ import type {
     AutoCommitSelectedFiles,
 } from "../autoCommitGlobs";
 import { GitOperation } from "../types";
+import { ignoredFolders, visibleInSourceControl } from "../ignoredFolders";
 import type {
     BranchInfo,
     DiffFile,
@@ -39,6 +40,27 @@ export abstract class GitManager {
     }
 
     abstract status(opts?: { path?: string }): Promise<Status>;
+
+    protected get ignoredDirectories() {
+        return ignoredFolders(this.plugin.settings.ignoredFolders);
+    }
+
+    protected allowsPath(repoPath: string) {
+        return this.canStageVaultFile(this.getRelativeVaultPath(repoPath));
+    }
+
+    canStageVaultFile(vaultPath: string) {
+        return visibleInSourceControl(this.plugin.settings.ignoredFolders)({
+            vaultPath,
+        });
+    }
+
+    protected assertNoIgnoredStaged(paths: string[]) {
+        if (paths.some((path) => !this.allowsPath(path)))
+            throw new Error(
+                "An ignored folder contains staged changes. Commit or unstage them with standard Git first."
+            );
+    }
 
     abstract selectAutoCommitFiles(
         status: Status,

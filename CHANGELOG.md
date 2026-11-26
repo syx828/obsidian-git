@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## 2.45.0 (syx828 fork)
+
+Configure **Git → Advanced → Ignored folders**, one vault-relative folder per line.
+Obsidian Git hides these changes and skips them when staging and committing.
+Standard Git still tracks the files. If the index already contains ignored changes,
+commit or unstage them with standard Git first. Conflicts remain visible.
+
 ## [2.44.0](https://github.com/Vinzent03/obsidian-git/compare/2.43.0...2.44.0) (2026-11-23)
 
 ### Features

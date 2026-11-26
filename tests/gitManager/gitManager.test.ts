@@ -53,6 +53,29 @@ describe.each(gitManagerBackends)("$name GitManager contract", (backend) => {
         expect(trigger).toHaveBeenCalledWith("obsidian-git:refs-changed");
     });
 
+    it("keeps plugin-ignored changes for standard Git", async () => {
+        context = await backend.create();
+        const { manager, plugin, repo } = context;
+        const ignored = ".obsidian/app.json";
+        await repo.writeAndCommit(ignored, "old", "shared default");
+        plugin.settings.ignoredFolders =
+            manager.getRelativeVaultPath(".obsidian");
+        repo.write(ignored, "local");
+        repo.write("note.md", "edited");
+        expect(
+            (await manager.status()).changed.map((f) => f.path)
+        ).not.toContain(ignored);
+        await manager.stageAll({});
+        expect(await repo.cachedDiffNames()).toBe("note.md");
+        await manager.commitAll({ message: "notes only" });
+        expect(await repo.show(`HEAD:${ignored}`)).toBe("old");
+        await repo.git.add(ignored);
+        await expect(
+            manager.commit({ message: "must not commit" })
+        ).rejects.toThrow(/ignored folder/i);
+        expect(await repo.cachedDiffNames()).toBe(ignored);
+    });
+
     it("does not notify ref listeners when checkout fails", async () => {
         context = await backend.create();
         const { manager, plugin } = context;

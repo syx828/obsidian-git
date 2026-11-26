@@ -69,6 +69,7 @@ export interface ObsidianGitSettings {
     customMessageOnAutoBackup: boolean;
     autoBackupAfterFileChange: boolean;
     treeStructure: boolean;
+    ignoredFolders: string;
     /**
      * @deprecated Using `localstorage` instead
      */

@@ -433,16 +433,23 @@ export class SimpleGit extends GitManager {
                 vaultPath: this.getRelativeVaultPath(res.path),
             };
         });
+        const visibleFiles = this.ignoredDirectories.length
+            ? allFilesFormatted.filter(
+                  (f) =>
+                      this.allowsPath(f.path) &&
+                      (!f.from || this.allowsPath(f.from))
+              )
+            : allFilesFormatted;
         const conflicted = status.conflicted.map(
             (path) => this.formatPath({ path }).path
         );
         const conflictedPaths = new Set(conflicted);
         return {
-            all: allFilesFormatted,
-            changed: allFilesFormatted.filter(
+            all: visibleFiles,
+            changed: visibleFiles.filter(
                 (e) => e.workingDir !== " " && !conflictedPaths.has(e.path)
             ),
-            staged: allFilesFormatted.filter(
+            staged: visibleFiles.filter(
                 (e) => e.index !== " " && e.index != "U"
             ),
             conflicted,
@@ -701,6 +708,24 @@ export class SimpleGit extends GitManager {
         return this.git.raw(args).then((x) => x.trim() !== "");
     }
 
+    private ignoredPathspecs() {
+        return this.ignoredDirectories.map(
+            (dir) => `:(top,exclude,literal)${this.getRelativeRepoPath(dir)}`
+        );
+    }
+
+    private async checkIgnoredIndex() {
+        if (!this.ignoredDirectories.length) return;
+        const paths = await this.git.raw([
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--name-only",
+            "-z",
+        ]);
+        this.assertNoIgnoredStaged(paths.split("\0").filter(Boolean));
+    }
+
     async commitAll({
         message,
         status,
@@ -715,7 +740,11 @@ export class SimpleGit extends GitManager {
         amend?: boolean;
     }): Promise<number> {
         return this.withGitOperation(GitOperation.commit, async () => {
-            if (this.plugin.settings.updateSubmodules) {
+            await this.checkIgnoredIndex();
+            if (
+                this.plugin.settings.updateSubmodules &&
+                !this.ignoredDirectories.length
+            ) {
                 const submodulePaths = await this.getSubmodulePaths();
                 for (const item of submodulePaths) {
                     await this.git.cwd({ path: item, root: false }).add("-A");
@@ -738,6 +767,7 @@ export class SimpleGit extends GitManager {
                         "-A",
                         "--",
                         ...selection.globs.map((glob) => `:(glob)${glob}`),
+                        ...this.ignoredPathspecs(),
                     ]);
                 }
             } else if (selection?.globs.length) {
@@ -746,14 +776,13 @@ export class SimpleGit extends GitManager {
                     "--",
                     ".",
                     ...selection.globs.map((glob) => `:(exclude,glob)${glob}`),
+                    ...this.ignoredPathspecs(),
                 ]);
             } else {
-                const vaultPath = this.getVaultPathspec();
-                await this.git.add(
-                    vaultPath == undefined ? "-A" : ["-A", "--", vaultPath]
-                );
+                await this.stageAll({});
             }
 
+            await this.checkIgnoredIndex();
             const res = await this.git.commit(
                 await this.formatCommitMessage(message),
                 amend ? ["--amend"] : []
@@ -773,6 +802,7 @@ export class SimpleGit extends GitManager {
     }): Promise<number> {
         return this.withGitOperation(GitOperation.commit, async () => {
             try {
+                await this.checkIgnoredIndex();
                 const res = await this.git.commit(
                     await this.formatCommitMessage(message),
                     amend ? ["--amend"] : []
@@ -797,11 +827,21 @@ export class SimpleGit extends GitManager {
 
     async stage(path: string, relativeToVault: boolean): Promise<void> {
         path = this.getRelativeRepoPath(path, relativeToVault);
-        await this.git.add(["--", path]);
+        if (this.ignoredDirectories.length && !this.allowsPath(path)) return;
+        await this.git.add(["--", path, ...this.ignoredPathspecs()]);
     }
 
     async stageAll({ dir }: { dir?: string }): Promise<void> {
         const scopedDir = dir ?? this.getVaultPathspec();
+        if (this.ignoredDirectories.length) {
+            await this.git.add([
+                "-A",
+                "--",
+                scopedDir ?? ".",
+                ...this.ignoredPathspecs(),
+            ]);
+            return;
+        }
         await this.git.add(
             scopedDir == undefined ? "-A" : ["-A", "--", scopedDir]
         );
@@ -809,12 +849,21 @@ export class SimpleGit extends GitManager {
 
     async unstageAll({ dir }: { dir?: string }): Promise<void> {
         const scopedDir = dir ?? this.getVaultPathspec();
+        if (this.ignoredDirectories.length) {
+            await this.git.reset([
+                "--",
+                scopedDir ?? ".",
+                ...this.ignoredPathspecs(),
+            ]);
+            return;
+        }
         await this.git.reset(scopedDir != undefined ? ["--", scopedDir] : []);
     }
 
     async unstage(path: string, relativeToVault: boolean): Promise<void> {
         path = this.getRelativeRepoPath(path, relativeToVault);
-        await this.git.reset(["--", path]);
+        if (this.ignoredDirectories.length && !this.allowsPath(path)) return;
+        await this.git.reset(["--", path, ...this.ignoredPathspecs()]);
     }
 
     async discard(filepath: string): Promise<void> {
@@ -868,6 +917,10 @@ export class SimpleGit extends GitManager {
     }
 
     async discardAll({ dir }: { dir?: string }): Promise<void> {
+        if (this.ignoredDirectories.length)
+            throw new Error(
+                "Discard individual files when plugin ignored folders are configured."
+            );
         return this.discard(dir ?? this.getVaultPathspec() ?? ".");
     }
 

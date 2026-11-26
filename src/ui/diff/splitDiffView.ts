@@ -357,6 +357,14 @@ export default class SplitDiffView extends ItemView {
         setIcon(stageButton, this.state.bRef == undefined ? "plus" : "minus");
 
         stageButton.onmousedown = async (_) => {
+            if (
+                !this.plugin.gitManager.canStageVaultFile(
+                    this.plugin.gitManager.getRelativeVaultPath(
+                        this.state.bFile
+                    )
+                )
+            )
+                return;
             const bEditor = this.mergeView!.b;
             const aEditor = this.mergeView!.a;
             const chunks = getChunks(bEditor.state)!;
